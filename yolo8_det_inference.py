@@ -3,6 +3,8 @@ import cv2
 import sys
 import argparse
 import numpy as np
+import tty
+import termios
 
 '''
     批量测试视频和图像，支持.pt .pnnx .rknn格式的模型
@@ -28,10 +30,23 @@ OBJ_THRESH = 0.25
 NMS_THRESH = 0.45
 IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
+# CLASSES = ("gun")
 CLASSES = ("closed", "open")
 
 
 # coco_id_list = [0, 1]
+
+def wait_for_space():
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == ' ':
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 # ---------------------------------------------------  批量推理 --------------------------------------------------#
@@ -166,6 +181,7 @@ def draw(image, boxes, scores, classes):
         cv2.putText(image, '{0} {1:.2f}'.format(CLASSES[cl], score),
                     (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
+
 # 由于门经常在画面边缘，文字标签经常不显示
 # 在框下方绘制标签
 def draw_bellow(image, boxes, scores, classes):
@@ -179,6 +195,7 @@ def draw_bellow(image, boxes, scores, classes):
 
 def setup_model(args):
     model_path = args.model_path
+
     if model_path.endswith('.pt') or model_path.endswith('.torchscript'):
         platform = 'pytorch'
         from py_utils.pytorch_executor import Torch_model_container
@@ -186,7 +203,14 @@ def setup_model(args):
     elif model_path.endswith('.rknn'):
         platform = 'rknn'
         from py_utils.rknn_executor import RKNN_model_container
-        model = RKNN_model_container(args.model_path, args.device_id)
+        model = RKNN_model_container(args)
+        if args.print_sdk_version:
+            model.print_sdk_version()
+        if args.print_model_perf:
+            model.print_model_perf()
+        print("\n\n\n\033[31m 按空格键继续..\033[0m\n\n\n")
+        wait_for_space()
+        print("\n\n\n\033[32m 模型推理..\033[0m\n\n\n")
     elif model_path.endswith('.onnx'):
         platform = 'onnx'
         from py_utils.onnx_executor import Onnx_model_container
@@ -197,12 +221,12 @@ def setup_model(args):
     return model, platform
 
 
-def process_video_folder(video_folder, model, platform, co_helper):
+def process_video_folder(video_folder, model, platform, co_helper, tag):
     # 获取所有视频文件
     video_files = [f for f in os.listdir(video_folder) if f.endswith(('.mp4', '.avi', '.mov'))]
 
     # 创建输出目录（如果不存在）
-    output_dir = './result'
+    output_dir = os.path.join('./result', tag)
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
@@ -259,7 +283,7 @@ def process_video_folder(video_folder, model, platform, co_helper):
         # 释放资源
         cap.release()
         out.release()
-        print(f"Processed video saved to {output_path}")
+        print("\n\033[32mProcessed video saved to {0}\033[0m\n".format(output_path))
 
 
 def process_image_folder(image_folder, model, platform, co_helper):
@@ -303,7 +327,7 @@ def main(args):
     co_helper = COCO_test_helper(enable_letter_box=True)
 
     if args.video_folder:
-        process_video_folder(args.video_folder, model, platform, co_helper)
+        process_video_folder(args.video_folder, model, platform, co_helper, args.tag)
     elif args.image_folder:
         process_image_folder(args.image_folder, model, platform, co_helper)
 
@@ -313,11 +337,20 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Batch process video and images.')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the model file')
+    parser.add_argument('--tag', type=str, default='door', help='result tag')
     parser.add_argument('--video_folder', type=str, default=None,
                         help='Directory containing videos for batch processing')
     parser.add_argument('--image_folder', type=str, default=None,
                         help='Directory containing images for batch processing')
-    parser.add_argument('--device_id', type=str, default='rk3588', help='Device ID for the RKNN model')
+    parser.add_argument('--target', type=str, default='rk3588', help='Target plantom for the RKNN model')
+    parser.add_argument('--device_id', type=str, default='rk3588',
+                        help='Device ID for the RKNN model')  # 如果ADB链接多个设备 通过list查看设备号
+    # 进行性能评估时是否开启debug模式。在debug模式下，可以获取到每一层的运行时间，否则只能获取模型运行的总时间。默认值为False。
+    parser.add_argument('--perf_debug', type=bool, default=True, help='Display each layer s runtime cost')  #
+    # 是否进入内存评估模式。进入内存评估模式后，可以调用eval_memory接口获取模型运行时的内存使用情况。默认值为False。
+    parser.add_argument('--eval_mem', type=bool, default=True, help='Print model memory allocation')
 
+    parser.add_argument('--print_model_perf', type=bool, default=True, help='打印性能评估信息')
+    parser.add_argument('--print_sdk_version', type=bool, default=False, help='打印SDK API和驱动版本号')
     args = parser.parse_args()
     main(args)
