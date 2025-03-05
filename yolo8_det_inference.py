@@ -30,8 +30,10 @@ OBJ_THRESH = 0.25
 NMS_THRESH = 0.45
 IMG_SIZE = (640, 640)  # (width, height), such as (1280, 736)
 
-# CLASSES = ("gun")
-CLASSES = ("closed", "open")
+CLASSES = ("gun")
+
+
+# CLASSES = ("closed", "open")
 
 
 # coco_id_list = [0, 1]
@@ -173,6 +175,30 @@ def post_process(input_data):
     return boxes, classes, scores
 
 
+def draw_score_threshold(image, text_color=(0, 255, 0), font_scale=0.8, thickness=2):
+    """
+    在图像左上角绘制得分阈值。
+
+    参数:
+        image: 输入的图像 (numpy数组).
+        text_color: 文本颜色 (BGR格式, 默认绿色).
+        font_scale: 字体大小 (默认0.8).
+        thickness: 文本厚度 (默认2).
+    """
+    # 构造文本内容
+    text = f"OBJ_THRESH: {OBJ_THRESH:.2f}"
+
+    # 获取文本大小
+    (label_width, label_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+
+    # 设置文本位置 (左上角，留一些边距)
+    text_x = 10  # 水平偏移
+    text_y = label_height + 10  # 垂直偏移
+
+    # 绘制文本
+    cv2.putText(image, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, thickness)
+
+
 def draw(image, boxes, scores, classes):
     for box, score, cl in zip(boxes, scores, classes):
         top, left, right, bottom = [int(_b) for _b in box]
@@ -226,7 +252,7 @@ def process_video_folder(video_folder, model, platform, co_helper, tag):
     video_files = [f for f in os.listdir(video_folder) if f.endswith(('.mp4', '.avi', '.mov'))]
 
     # 创建输出目录（如果不存在）
-    output_dir = os.path.join('./result', tag)
+    output_dir = os.path.join('./result/video', tag)
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
@@ -286,11 +312,16 @@ def process_video_folder(video_folder, model, platform, co_helper, tag):
         print("\n\033[32mProcessed video saved to {0}\033[0m\n".format(output_path))
 
 
-def process_image_folder(image_folder, model, platform, co_helper):
+def process_image_folder(image_folder, model, platform, co_helper, tag):
     image_files = sorted([f for f in os.listdir(image_folder) if f.endswith(('.jpg', '.png'))])
 
     for image_file in image_files:
         image_path = os.path.join(image_folder, image_file)
+        # 创建输出目录（如果不存在）
+        output_dir = os.path.join('./result/image', tag)
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+
         if not os.path.exists(image_path):
             print(f"Image file {image_file} does not exist.")
             continue
@@ -299,6 +330,10 @@ def process_image_folder(image_folder, model, platform, co_helper):
         if img is None:
             print(f"Failed to load image {image_file}.")
             continue
+
+        file_name = os.path.basename(image_path)
+        file_root, ext = os.path.splitext(file_name)
+        new_file_name = file_name  # 默认保持原文件名
 
         img = co_helper.letter_box(im=img.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0, 0, 0))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -313,11 +348,16 @@ def process_image_folder(image_folder, model, platform, co_helper):
         outputs = model.run([input_data])
         boxes, classes, scores = post_process(outputs)
 
+        draw_score_threshold(img)
+
         if boxes is not None:
             draw_bellow(img, co_helper.get_real_box(boxes), scores, classes)
+            formatted_boxes = ["{}_{}_{}_{}".format(*map(int, box)) for (box, score) in zip(boxes, scores) if
+                               score > OBJ_THRESH]
+            new_file_name = f"{file_root}_" + "+".join(formatted_boxes) + ext
 
         # Save the processed image
-        output_img_path = os.path.join('./result', f'output_{image_file}')
+        output_img_path = os.path.join(output_dir, f'output_{new_file_name}')
         cv2.imwrite(output_img_path, img)
         print(f"Processed image saved to {output_img_path}")
 
@@ -329,7 +369,7 @@ def main(args):
     if args.video_folder:
         process_video_folder(args.video_folder, model, platform, co_helper, args.tag)
     elif args.image_folder:
-        process_image_folder(args.image_folder, model, platform, co_helper)
+        process_image_folder(args.image_folder, model, platform, co_helper, args.tag)
 
     model.release()
 
@@ -337,7 +377,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Batch process video and images.')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the model file')
-    parser.add_argument('--tag', type=str, default='door', help='result tag')
+    parser.add_argument('--tag', type=str, default='gun', help='result tag')
     parser.add_argument('--video_folder', type=str, default=None,
                         help='Directory containing videos for batch processing')
     parser.add_argument('--image_folder', type=str, default=None,

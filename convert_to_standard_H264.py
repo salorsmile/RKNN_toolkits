@@ -42,6 +42,6 @@ def convert_to_h264_mp4(input_folder, output_folder):
 
 
 if __name__ == "__main__":
-    input_folder = r'D:\_proj\Python\RKNN_toolkits\data\video'  # 输入视频文件夹
-    output_folder = r'D:\_proj\Python\RKNN_toolkits\data\video-t'  # 输出视频文件夹
+    input_folder = r'I:\nianhouyanshishipin\20250227(zuizhonggeizonghangyanshi)\1：damenmenkou'  # 输入视频文件夹
+    output_folder = r'D:\_proj\Python\RKNN_toolkits\data\20250227(zuizhonggeizonghangyanshi)\1：damenmenkou'  # 输出视频文件夹
     convert_to_h264_mp4(input_folder, output_folder)
