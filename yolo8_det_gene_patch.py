@@ -28,7 +28,7 @@ from py_utils.coco_utils import COCO_test_helper
 # ---------------------------------------------------  配置参数 --------------------------------------------------#
 OBJ_THRESH = 0.25
 NMS_THRESH = 0.45
-IMG_SIZE = (288, 480)  # (width, height), such as (1280, 736)
+IMG_SIZE = (480, 480)  # (width, height), such as (1280, 736)
 
 CLASSES = ("gun")
 
@@ -53,20 +53,25 @@ def wait_for_space():
 
 # ---------------------------------------------------  批量推理 --------------------------------------------------#
 
+# def filter_boxes(boxes, box_confidences, box_class_probs):
+#     box_confidences = box_confidences.reshape(-1)
+#     candidate, class_num = box_class_probs.shape
+#
+#     class_max_score = np.max(box_class_probs, axis=-1)
+#     classes = np.argmax(box_class_probs, axis=-1)
+#
+#     _class_pos = np.where(class_max_score * box_confidences >= OBJ_THRESH)
+#     scores = (class_max_score * box_confidences)[_class_pos]
+#
+#     boxes = boxes[_class_pos]
+#     classes = classes[_class_pos]
+#
+#     return boxes, classes, scores
+
 def filter_boxes(boxes, box_confidences, box_class_probs):
-    box_confidences = box_confidences.reshape(-1)
-    candidate, class_num = box_class_probs.shape
-
-    class_max_score = np.max(box_class_probs, axis=-1)
-    classes = np.argmax(box_class_probs, axis=-1)
-
-    _class_pos = np.where(class_max_score * box_confidences >= OBJ_THRESH)
-    scores = (class_max_score * box_confidences)[_class_pos]
-
-    boxes = boxes[_class_pos]
-    classes = classes[_class_pos]
-
-    return boxes, classes, scores
+    class_max_score = np.max(box_class_probs, axis=-1) * box_confidences.flatten()
+    _class_pos = np.where(class_max_score >= OBJ_THRESH)
+    return boxes[_class_pos], np.argmax(box_class_probs, axis=-1)[_class_pos], class_max_score[_class_pos]
 
 
 def nms_boxes(boxes, scores):
@@ -88,8 +93,13 @@ def nms_boxes(boxes, scores):
         xx2 = np.minimum(x[i] + w[i], x[order[1:]] + w[order[1:]])
         yy2 = np.minimum(y[i] + h[i], y[order[1:]] + h[order[1:]])
 
-        w1 = np.maximum(0.0, xx2 - xx1 + 0.00001)
-        h1 = np.maximum(0.0, yy2 - yy1 + 0.00001)
+        # w1 = np.maximum(0.0, xx2 - xx1 + 0.00001)
+        # h1 = np.maximum(0.0, yy2 - yy1 + 0.00001)
+        # inter = w1 * h1
+
+        # 避免负数
+        w1 = np.clip(xx2 - xx1, 0, None)
+        h1 = np.clip(yy2 - yy1, 0, None)
         inter = w1 * h1
 
         ovr = inter / (areas[i] + areas[order[1:]] - inter)
@@ -202,7 +212,8 @@ def draw_score_threshold(image, text_color=(0, 255, 0), font_scale=0.8, thicknes
 def draw(image, boxes, scores, classes):
     for box, score, cl in zip(boxes, scores, classes):
         top, left, right, bottom = [int(_b) for _b in box]
-        print("%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], top, left, right, bottom, score))
+        print("Drawed rect @ [cls=%5s ] [rect=(%d %d %d %d)] [ score=%.4f ]" % (
+            CLASSES[cl], top, left, right, bottom, score))
         cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
         cv2.putText(image, '{0} {1:.2f}'.format(CLASSES[cl], score),
                     (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -213,10 +224,58 @@ def draw(image, boxes, scores, classes):
 def draw_bellow(image, boxes, scores, classes):
     for box, score, cl in zip(boxes, scores, classes):
         top, left, right, bottom = [int(_b) for _b in box]
-        print("%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], top, left, right, bottom, score))
+        print("Drawed rect @ [cls=%5s ] [rect=(%d %d %d %d)] [ score=%.4f ]" % (
+            CLASSES[cl], top, left, right, bottom, score))
         cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
         cv2.putText(image, '{0} {1:.2f}'.format(CLASSES[cl], score),
                     (top, left + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+
+def draw_bellow_and_crop_patches(image, boxes, scores, classes, save_patches_path, img_name):
+    for box, score, cl in zip(boxes, scores, classes):
+        # 检测框的裁切区域
+        top, left, right, bottom = [int(_b) for _b in box]
+        cropped_patch = image[left:bottom, top:right]  # OpenCV 格式 (H, W, C)
+
+        # 向周围扩展20%的裁切区域
+        # 计算原始宽度和高度
+        box_width = right - top
+        box_height = bottom - left
+
+        # 计算扩展量（增加 20%）
+        expand_w = int(box_width * 0.2)
+        expand_h = int(box_height * 0.2)
+
+        # 计算扩展后的新边界
+        new_top = max(0, top - expand_w)
+        new_left = max(0, left - expand_h)
+        new_right = min(image.shape[1], right + expand_w)  # 限制在图像范围内
+        new_bottom = min(image.shape[0], bottom + expand_h)  # 限制在图像范围内
+
+        # 裁剪扩展后的区域
+        cropped_patch_exp20 = image[new_left:new_bottom, new_top:new_right]  # OpenCV 格式 (H, W, C)
+
+        if cropped_patch.size == 0:
+            continue  # 避免空裁剪
+
+        # 生成唯一文件名
+        patch_filename = f"{os.path.splitext(img_name)[0]}_{top}_{left}_{right}_{bottom}.jpg"
+        patch_exp20_filename = f"{os.path.splitext(img_name)[0]}_{top}_{left}_{right}_{bottom}_exp20.jpg"
+
+        # print(f"save_patches_path: {save_patches_path} \npatch_filename: {patch_filename} \n ")
+        patch_path = os.path.join(save_patches_path, patch_filename)
+        patch_path_exp20 = os.path.join(save_patches_path, patch_exp20_filename)
+
+        cv2.imwrite(patch_path, cropped_patch)
+        cv2.imwrite(patch_path_exp20, cropped_patch_exp20)
+        print(f"\nCropped patch save to: \n{patch_path}, \n{patch_path_exp20}\n")
+
+        cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
+        cv2.putText(image, '{0} {1:.2f}'.format(CLASSES[cl], score),
+                    (top, left + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        print("Drawed rect @ [cls=%5s ] [rect=(%d %d %d %d)] [ score=%.4f ]" % (
+            CLASSES[cl], top, left, right, bottom, score))
 
 
 def setup_model(args):
@@ -247,18 +306,23 @@ def setup_model(args):
     return model, platform
 
 
-def process_video_folder(video_folder, model, platform, co_helper, tag):
+def process_video_folder(args, model, platform, co_helper):
     # 获取所有视频文件
-    video_files = [f for f in os.listdir(video_folder) if f.endswith(('.mp4', '.avi', '.mov'))]
+    video_files = [f for f in os.listdir(args.video_folder) if f.endswith(('.mp4', '.avi', '.mov'))]
 
     # 创建输出目录（如果不存在）
-    output_dir = os.path.join('./result/video', tag)
+    output_dir = os.path.join('./result/video', args.tag)
     if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+
+    if args.save_patch:
+        patch_dir = os.path.join('./result/video', args.tag, "patch")
+        os.makedirs(patch_dir, exist_ok=True)
 
     # 遍历每个视频文件
     for video_file in video_files:
-        video_path = os.path.join(video_folder, video_file)
+        video_path = os.path.join(args.video_folder, video_file)
+
         if not os.path.exists(video_path):
             print(f"Video file {video_file} does not exist.")
             continue
@@ -278,8 +342,11 @@ def process_video_folder(video_folder, model, platform, co_helper, tag):
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 使用 'mp4v' 编解码器，或者根据需要改为 'XVID' 或 'H264'
         out = cv2.VideoWriter(output_path, fourcc, 30, (video_width, video_height))
 
+        frame_id = 0
         while True:
+            frame_id = frame_id + 1
             ret, frame = cap.read()
+            print(f"Processing.. video {video_path}  frame_id [{frame_id}]")
             if not ret:
                 break
 
@@ -301,7 +368,18 @@ def process_video_folder(video_folder, model, platform, co_helper, tag):
 
             # 如果有检测到框，绘制到原图
             if boxes is not None:
-                draw_bellow(frame, co_helper.get_real_box(boxes), scores, classes)
+                if args.save_patch:
+                    draw_bellow_and_crop_patches(img,
+                                                 co_helper.get_real_box(boxes),
+                                                 scores,
+                                                 classes,
+                                                 patch_dir,
+                                                 video_file)
+                else:
+                    draw_bellow(img,
+                                co_helper.get_real_box(boxes),
+                                scores,
+                                classes)
 
             # 保存处理后的每一帧
             out.write(frame)
@@ -312,19 +390,24 @@ def process_video_folder(video_folder, model, platform, co_helper, tag):
         print("\n\033[32mProcessed video saved to {0}\033[0m\n".format(output_path))
 
 
-def process_image_folder(image_folder, model, platform, co_helper, tag):
-    image_files = sorted([f for f in os.listdir(image_folder) if f.endswith(('.jpg', '.png'))])
+def process_image_folder(args, model, platform, co_helper):
+    image_files = sorted([f for f in os.listdir(args.image_folder) if f.endswith(('.jpg', '.png'))])
 
     for image_file in image_files:
-        image_path = os.path.join(image_folder, image_file)
+        # 保存图片标志
+        obj_flag = False
+        image_path = os.path.join(args.image_folder, image_file)
         # 创建输出目录（如果不存在）
-        output_dir = os.path.join('./result/image', tag)
+        output_dir = os.path.join('./result/image', args.tag)
         if not os.path.exists(output_dir):
-            os.mkdir(output_dir)
-
+            os.makedirs(os.path.join(output_dir, 'raw/obj'), exist_ok=True)
+            os.makedirs(os.path.join(output_dir, 'raw/nobj'), exist_ok=True)
         if not os.path.exists(image_path):
             print(f"Image file {image_file} does not exist.")
             continue
+        if args.save_patch:
+            patch_dir = os.path.join('./result/image', args.tag, "patch")
+            os.makedirs(patch_dir, exist_ok=True)
 
         img = cv2.imread(image_path)
         if img is None:
@@ -356,31 +439,21 @@ def process_image_folder(image_folder, model, platform, co_helper, tag):
         draw_score_threshold(img_resized)
 
         if boxes is not None:
-            # 将框从resize后的图像坐标还原到原图
-            # boxes_rescaled = []
-            # for box in boxes:
-            #     # 将检测框从缩放后的图像坐标转换回原图大小
-            #     x1, y1, x2, y2 = box
-            #     x1 = int(x1 * original_width / IMG_SIZE[0])
-            #     y1 = int(y1 * original_height / IMG_SIZE[1])
-            #     x2 = int(x2 * original_width / IMG_SIZE[0])
-            #     y2 = int(y2 * original_height / IMG_SIZE[1])
-            #     boxes_rescaled.append([x1, y1, x2, y2])
-            # 
-            # # 绘制检测框
-            # draw_bellow(img, co_helper.get_real_box(boxes_rescaled), scores, classes)
-            if boxes is not None:
-                real_boxes = co_helper.get_real_box(boxes)
+            obj_flag = True
+            real_boxes = co_helper.get_real_box(boxes)
+            if args.save_patch:
+                draw_bellow_and_crop_patches(img, real_boxes, scores, classes, patch_dir, file_name)
+            else:
                 draw_bellow(img, real_boxes, scores, classes)
+
             formatted_boxes = ["{}_{}_{}_{}".format(*map(int, box)) for (box, score) in zip(real_boxes, scores) if
                                score > OBJ_THRESH]
             new_file_name = f"{file_root}_" + "+".join(formatted_boxes) + ext
 
-        # Convert the image back to BGR before saving
-        # img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
         # Save the processed image with original size
-        output_img_path = os.path.join(output_dir, f'output_{new_file_name}')
+        output_img_path = os.path.join(output_dir, 'raw/nobj', f'output_{new_file_name}')
+        if obj_flag:
+            output_img_path = os.path.join(output_dir, 'raw/obj', f'output_{new_file_name}')
         cv2.imwrite(output_img_path, img)
         print(f"Processed image saved to {output_img_path}")
 
@@ -390,9 +463,9 @@ def main(args):
     co_helper = COCO_test_helper(enable_letter_box=True)
 
     if args.video_folder:
-        process_video_folder(args.video_folder, model, platform, co_helper, args.tag)
+        process_video_folder(args, model, platform, co_helper)
     elif args.image_folder:
-        process_image_folder(args.image_folder, model, platform, co_helper, args.tag)
+        process_image_folder(args, model, platform, co_helper)
 
     model.release()
 
@@ -400,7 +473,8 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Batch process video and images.')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the model file')
-    parser.add_argument('--tag', type=str, default='gun-288x480', help='result tag')
+    parser.add_argument('--save_patch', type=bool, default=True, help='保存生成的检测框区域，可用于迭代误检')
+    parser.add_argument('--tag', type=str, default='gun-det-250321', help='result tag')
     parser.add_argument('--video_folder', type=str, default=None,
                         help='Directory containing videos for batch processing')
     parser.add_argument('--image_folder', type=str, default=None,
